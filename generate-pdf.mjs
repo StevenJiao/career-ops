@@ -142,18 +142,18 @@ async function generatePDF() {
     // Wait for fonts to load
     await page.evaluate(() => document.fonts.ready);
 
-    // Generate PDF
-    const pdfBuffer = await page.pdf({
-      format: format,
-      printBackground: true,
-      margin: {
-        top: '0.6in',
-        right: '0.6in',
-        bottom: '0.6in',
-        left: '0.6in',
-      },
-      preferCSSPageSize: false,
-    });
+  // Generate PDF
+  const pdfBuffer = await page.pdf({
+    format: format,
+    printBackground: true,
+    margin: {
+      top: '0.4in',
+      right: '0.4in',
+      bottom: '0.4in',
+      left: '0.4in',
+    },
+    preferCSSPageSize: false,
+  });
 
     // Write PDF
     const { writeFile } = await import('fs/promises');

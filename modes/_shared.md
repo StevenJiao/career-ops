@@ -125,6 +125,7 @@ After detecting archetype, read `modes/_profile.md` for the user's specific fram
 | Write | Temporary HTML for PDF, applications.md, reports .md |
 | Edit | Update tracker |
 | Canva MCP | Optional visual CV generation. Duplicate base design, edit text, export PDF. Requires `canva_resume_design_id` in profile.yml. |
+| Google Drive | Optional visual CV generation. Requires `google_drive_cv_id` in profile.yml. |
 | Bash | `node generate-pdf.mjs` |
 
 ### Time-to-offer priority

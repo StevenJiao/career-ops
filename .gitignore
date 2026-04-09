@@ -7,6 +7,7 @@ reports/*.md
 output/*
 !output/.gitkeep
 batch/logs/*
+batch/tracker-additions/*
 !batch/logs/.gitkeep
 batch/batch-state.tsv
 batch/batch-input.tsv
@@ -26,6 +27,7 @@ modes/_profile.md
 .resolved-prompt-*
 node_modules/
 bun.lock
+.npm-cache/*
 
 # OS
 .DS_Store
@@ -37,3 +39,5 @@ bun.lock
 .claude/memory/
 career-dashboard
 package-lock.json
+generate-pdf.mjs
+cv.md

@@ -29,6 +29,13 @@ const APPLICATIONS_PATH = 'data/applications.md';
 const CONCURRENCY = 10;
 const FETCH_TIMEOUT_MS = 10_000;
 
+function formatLocalDate(d) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 // ── API detection ───────────────────────────────────────────────────
 
 function detectApi(company) {
@@ -279,7 +286,7 @@ async function main() {
   const seenCompanyRoles = loadSeenCompanyRoles();
 
   // 4. Fetch all APIs
-  const date = new Date().toISOString().slice(0, 10);
+  const date = formatLocalDate(new Date());
   let totalFound = 0;
   let totalFiltered = 0;
   let totalDupes = 0;

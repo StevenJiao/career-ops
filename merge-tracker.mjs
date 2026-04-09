@@ -31,6 +31,47 @@ const VERIFY = process.argv.includes('--verify');
 
 // Canonical states and aliases
 const CANONICAL_STATES = ['Evaluated', 'Applied', 'Responded', 'Interview', 'Offer', 'Rejected', 'Discarded', 'SKIP'];
+const STATUS_RANK = new Map([
+  ['Evaluated', 1],
+  ['Applied', 2],
+  ['Responded', 3],
+  ['Interview', 4],
+  ['Offer', 5],
+  // Terminal-ish states; keep conservative merge rules below instead of rank-only behavior.
+  ['Rejected', 90],
+  ['Discarded', 90],
+  ['SKIP', 10],
+]);
+
+function mergeStatus(existingStatusRaw, incomingStatusRaw, { allowTerminalOverride }) {
+  const existing = validateStatus(existingStatusRaw);
+  const incoming = validateStatus(incomingStatusRaw);
+
+  // Never move away from hard terminal states unless explicitly allowed by caller.
+  if (existing === 'Rejected' || existing === 'Discarded') return existing;
+
+  // Allow marking terminal states only when explicitly requested (manual correction / exact match).
+  if (incoming === 'Rejected' || incoming === 'Discarded') {
+    return allowTerminalOverride ? incoming : existing;
+  }
+
+  // SKIP should be reversible (e.g., user decides to apply anyway).
+  const existingRank = STATUS_RANK.get(existing) ?? 0;
+  const incomingRank = STATUS_RANK.get(incoming) ?? 0;
+
+  // Never downgrade status (Applied -> Evaluated, etc.).
+  return incomingRank > existingRank ? incoming : existing;
+}
+
+function mergePdf(existingPdfRaw, incomingPdfRaw) {
+  const existing = String(existingPdfRaw || '').trim();
+  const incoming = String(incomingPdfRaw || '').trim();
+  const hasCheck = (s) => s.includes('✅');
+
+  if (hasCheck(existing)) return existing;
+  if (hasCheck(incoming)) return incoming;
+  return existing || incoming || '❌';
+}
 
 function validateStatus(status) {
   const clean = status.replace(/\*\*/g, '').replace(/\s+\d{4}-\d{2}-\d{2}.*$/, '').trim();
@@ -68,10 +109,84 @@ function normalizeCompany(name) {
 }
 
 function roleFuzzyMatch(a, b) {
-  const wordsA = a.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-  const wordsB = b.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-  const overlap = wordsA.filter(w => wordsB.some(wb => wb.includes(w) || w.includes(wb)));
-  return overlap.length >= 2;
+  const GENERIC = new Set([
+    'software',
+    'engineer',
+    'engineering',
+    'developer',
+    'development',
+    'product',
+    'role',
+    'roles',
+    // Common role descriptors that are too broad to distinguish postings
+    'backend',
+    'frontend',
+    'fullstack',
+    'full',
+    'stack',
+    'platform',
+    'infrastructure',
+    'systems',
+  ]);
+
+  const SENIORITY = new Set([
+    'intern',
+    'junior',
+    'jr',
+    'mid',
+    'intermediate',
+    'senior',
+    'sr',
+    'staff',
+    'principal',
+    'lead',
+    'manager',
+    'director',
+    'head',
+    'founding',
+  ]);
+
+  const tokenize = (s) => s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w => w.length > 2 || w === 'ai' || w === 'ml');
+
+  const wordsA = tokenize(a);
+  const wordsB = tokenize(b);
+
+  // Avoid collapsing distinct seniority levels into one tracker row
+  const seniorityA = new Set(wordsA.filter(w => SENIORITY.has(w)));
+  const seniorityB = new Set(wordsB.filter(w => SENIORITY.has(w)));
+  const seniorityMismatch = (() => {
+    if (seniorityA.size === 0 && seniorityB.size === 0) return false;
+    if (seniorityA.size !== seniorityB.size) return true;
+    for (const w of seniorityA) if (!seniorityB.has(w)) return true;
+    return false;
+  })();
+  if (seniorityMismatch) return false;
+
+  const overlap = wordsA.filter(w => wordsB.some(wb => wb === w || wb.includes(w) || w.includes(wb)));
+  const meaningfulOverlap = overlap.filter(w => !GENERIC.has(w) && !SENIORITY.has(w));
+
+  // Prevent false positives like "Software Engineer, Backend" vs "Software Engineer, Compute"
+  // where the only overlap is generic terms.
+  if (meaningfulOverlap.length === 0) return false;
+
+  // Prefer being conservative: require 2+ meaningful overlaps OR an exact match
+  // on the non-generic token set (handles "Backend Engineer" vs "Backend Software Engineer").
+  const nonGenericA = new Set(wordsA.filter(w => !GENERIC.has(w) && !SENIORITY.has(w)));
+  const nonGenericB = new Set(wordsB.filter(w => !GENERIC.has(w) && !SENIORITY.has(w)));
+  const sameNonGeneric = (() => {
+    if (nonGenericA.size !== nonGenericB.size) return false;
+    for (const w of nonGenericA) if (!nonGenericB.has(w)) return false;
+    return true;
+  })();
+
+  // If both sets are empty, we're matching on generic words only — that's too risky.
+  if (sameNonGeneric && nonGenericA.size > 0) return true;
+  return meaningfulOverlap.length >= 2;
 }
 
 function extractReportNum(reportStr) {
@@ -217,8 +332,14 @@ if (tsvFiles.length === 0) {
 
 // Sort files numerically for deterministic processing
 tsvFiles.sort((a, b) => {
-  const numA = parseInt(a.replace(/\D/g, '')) || 0;
-  const numB = parseInt(b.replace(/\D/g, '')) || 0;
+  // Use only the leading numeric prefix before the first dash.
+  // Avoid accidental digit capture from the rest of the filename (e.g., "3d", dates, etc.).
+  const getPrefix = (name) => {
+    const head = name.split('-')[0] || '';
+    return /^\d+$/.test(head) ? parseInt(head, 10) : 0;
+  };
+  const numA = getPrefix(a);
+  const numB = getPrefix(b);
   return numA - numB;
 });
 
@@ -239,6 +360,7 @@ for (const file of tsvFiles) {
   // 2. Company + role fuzzy match
   const reportNum = extractReportNum(addition.report);
   let duplicate = null;
+  let duplicateReason = null;
 
   if (reportNum) {
     // Check if this report number already exists
@@ -246,11 +368,12 @@ for (const file of tsvFiles) {
       const existingReportNum = extractReportNum(app.report);
       return existingReportNum === reportNum;
     });
+    if (duplicate) duplicateReason = 'reportNum';
   }
-
   if (!duplicate) {
     // Exact entry number match
     duplicate = existingApps.find(app => app.num === addition.num);
+    if (duplicate) duplicateReason = 'entryNum';
   }
 
   if (!duplicate) {
@@ -260,22 +383,29 @@ for (const file of tsvFiles) {
       if (normalizeCompany(app.company) !== normCompany) return false;
       return roleFuzzyMatch(addition.role, app.role);
     });
+    if (duplicate) duplicateReason = 'fuzzy';
   }
-
   if (duplicate) {
     const newScore = parseScore(addition.score);
     const oldScore = parseScore(duplicate.score);
 
-    if (newScore > oldScore) {
-      console.log(`🔄 Update: #${duplicate.num} ${addition.company} — ${addition.role} (${oldScore}→${newScore})`);
+    const shouldForceUpdate = duplicateReason === 'reportNum' || duplicateReason === 'entryNum';
+
+    if (shouldForceUpdate || newScore > oldScore) {
+      console.log(`???? ${shouldForceUpdate ? "Correct" : "Update"}: #${duplicate.num} ${addition.company} ??? ${addition.role} (${oldScore}???${newScore})`);
       const lineIdx = appLines.indexOf(duplicate.raw);
       if (lineIdx >= 0) {
-        const updatedLine = `| ${duplicate.num} | ${addition.date} | ${addition.company} | ${addition.role} | ${addition.score} | ${duplicate.status} | ${duplicate.pdf} | ${addition.report} | Re-eval ${addition.date} (${oldScore}→${newScore}). ${addition.notes} |`;
+        const note = shouldForceUpdate
+          ? addition.notes
+          : `Re-eval ${addition.date} (${oldScore}???${newScore}). ${addition.notes}`;
+        const mergedStatus = mergeStatus(duplicate.status, addition.status, { allowTerminalOverride: shouldForceUpdate });
+        const mergedPdf = mergePdf(duplicate.pdf, addition.pdf);
+        const updatedLine = `| ${duplicate.num} | ${addition.date} | ${addition.company} | ${addition.role} | ${addition.score} | ${mergedStatus} | ${mergedPdf} | ${addition.report} | ${note} |`;
         appLines[lineIdx] = updatedLine;
         updated++;
       }
     } else {
-      console.log(`⏭️  Skip: ${addition.company} — ${addition.role} (existing #${duplicate.num} ${oldScore} >= new ${newScore})`);
+      console.log(`??????  Skip: ${addition.company} ??? ${addition.role} (existing #${duplicate.num} ${oldScore} >= new ${newScore})`);
       skipped++;
     }
   } else {

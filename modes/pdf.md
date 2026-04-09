@@ -173,6 +173,103 @@ d. Report: PDF path, file size, Canva design URL (for manual tweaking)
 - If `find_and_replace_text` finds no matches → try broader substring matching
 - Always provide the Canva design URL so the user can edit manually if auto-edit fails
 
+## Google Drive CV Export (optional)
+
+If `config/profile.yml` has `google_drive_cv_id` set, offer the user a choice before generating:
+- **"HTML/PDF (fast, ATS-optimized)"** — existing flow above
+- **"Google Drive CV (design-preserving)"** — tailor and export the Drive-based CV as PDF (flow below)
+
+If the user has no `google_drive_cv_id`, skip this prompt and use the HTML/PDF flow.
+
+### Google Drive workflow
+
+#### Step 1 — Duplicate the base document
+
+a. Use the Google Drive API to copy the base file:
+   ```bash
+   curl -s -X POST \
+     "https://www.googleapis.com/drive/v3/files/{google_drive_cv_id}/copy" \
+     -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -H "Content-Type: application/json" \
+     -d '{"name": "cv-{candidate}-{company}-{YYYY-MM-DD}"}'
+   ```
+b. Note the new `file_id` from the response — all edits go to the copy, never the base.
+
+#### Step 2 — Read the document structure
+
+a. Export the copy as plain text to read its content:
+   ```bash
+   curl -s \
+     "https://www.googleapis.com/drive/v3/files/{new_file_id}/export?mimeType=text/plain" \
+     -H "Authorization: Bearer $(gcloud auth print-access-token)"
+   ```
+b. Map the text content to CV sections by content matching:
+   - Look for the candidate's name → header section
+   - Look for "Summary" or "Professional Summary" → summary section
+   - Look for company names from cv.md → experience sections
+   - Look for degree/school names → education section
+   - Look for skill keywords → skills section
+c. If mapping fails, show the user what was found and ask for guidance.
+
+#### Step 3 — Generate tailored content
+
+Same content generation as the HTML flow (Steps 1–11 above):
+- Rewrite Professional Summary with JD keywords + exit narrative
+- Reorder experience bullets by JD relevance
+- Select top competencies from JD requirements
+- Inject keywords naturally (NEVER invent)
+
+**IMPORTANT — Character budget rule:** Each replacement text MUST be approximately the same length as the original text it replaces (within ±15% character count). If tailored content is longer, condense it. Google Docs text boxes are fixed — longer text causes overflow or pushes subsequent elements out of position. Count the characters in each original element from Step 2 and enforce this budget when generating replacements.
+
+#### Step 4 — Apply edits
+
+a. Use the Google Docs API `batchUpdate` with `replaceAllText` for each section:
+   ```bash
+   curl -s -X POST \
+     "https://docs.googleapis.com/v1/documents/{new_file_id}:batchUpdate" \
+     -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "requests": [
+         {
+           "replaceAllText": {
+             "containsText": { "text": "{original_summary}", "matchCase": true },
+             "replaceText": "{tailored_summary}"
+           }
+         }
+       ]
+     }'
+   ```
+   Send one `replaceAllText` request per changed section (summary, each bullet, skills).
+b. **Verify layout after edits:**
+   - Export the updated document as PDF and spot-check the first page
+   - Look for: text overflow, uneven spacing, truncated bullets
+   - If issues appear, shorten the offending replacement text and re-apply
+c. Show the user the result and ask for approval before finalizing.
+
+#### Step 5 — Export and download PDF
+
+a. Export the edited copy as PDF:
+   ```bash
+   curl -sL \
+     "https://www.googleapis.com/drive/v3/files/{new_file_id}/export?mimeType=application/pdf" \
+     -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -o "output/cv-{candidate}-{company}-gdrive-{YYYY-MM-DD}.pdf"
+   ```
+b. Verify the download:
+   ```bash
+   file output/cv-{candidate}-{company}-gdrive-{YYYY-MM-DD}.pdf
+   ```
+   Must show "PDF document". If it shows XML or HTML, the token expired — refresh and retry.
+c. Report: PDF path, file size, Drive link to the copy (for manual tweaking).
+
+#### Error handling
+
+- If the copy step fails due to permissions → ask the user to confirm the `google_drive_cv_id` and that the service account or OAuth credentials have Editor access.
+- If `replaceAllText` finds no matches → try broader substring matching (first 30 characters of the target string); if still no match, warn user and show what text was found.
+- If PDF export returns HTML/error → verify the file ID and token; retry once; fall back to HTML/PDF pipeline if still failing.
+- Always provide the Drive link to the copy so the user can edit manually if auto-edit fails.
+
 ## Post-generación
 
 Actualizar tracker si la oferta ya está registrada: cambiar PDF de ❌ a ✅.
